@@ -14,6 +14,25 @@ import {
 import type { Seal, SealDraft, SealType } from '@/types/seal';
 import type { RootState } from './store';
 
+/**
+ * 编目完成把关：拓本只有挂上工单且实时对账相符，才允许进入「已编目」。
+ * 未挂工单 / 待对账 / 已挂起 / 待复核的拓本不能算编目完成。
+ */
+async function assertCanCatalog(rubbingId: string): Promise<void> {
+  const rubbing = await db.rubbings.get(rubbingId);
+  if (!rubbing) throw new Error('拓本不存在');
+  if (!rubbing.orderId) throw new Error('该拓本还没挂传拓工单，不能标记已编目');
+  const [order, reconRows] = await Promise.all([
+    db.orders.get(rubbing.orderId),
+    db.recons.where('rubbingId').equals(rubbingId).toArray(),
+  ]);
+  const recon = reconRows[0];
+  if (!order) throw new Error('所挂工单已不存在，请重新挂单');
+  if (!recon || recon.checkedAt === null || recon.status !== 'matched' || order.updatedAt > recon.checkedAt) {
+    throw new Error('须与传拓工单对账相符后，拓本才算编目完成');
+  }
+}
+
 export interface RubbingFilters {
   keyword: string;
   methods: RubbingMethod[];
@@ -51,8 +70,24 @@ export const loadRubbings = createAsyncThunk('rubbing/load', async () => {
 export const createRubbing = createAsyncThunk('rubbing/create', async (draft: RubbingDraft, { dispatch }) => {
   const now = Date.now();
   const row: Rubbing = { ...draft, id: createId('rub'), createdAt: now, updatedAt: now };
-  await db.rubbings.put(row);
-  await renumberRubbings(row.steleId);
+  await db.transaction('rw', [db.rubbings, db.recons], async () => {
+    await db.rubbings.put(row);
+    // 登记时即挂工单的，建一条待对账记录
+    if (row.orderId) {
+      await db.recons.put({
+        id: createId('recon'),
+        orderId: row.orderId,
+        rubbingId: row.id,
+        status: 'pending',
+        reason: '',
+        checkedAt: null,
+        checker: '',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    await renumberRubbings(row.steleId);
+  });
   await dispatch(loadRubbings());
   return row;
 });
@@ -60,7 +95,37 @@ export const createRubbing = createAsyncThunk('rubbing/create', async (draft: Ru
 export const updateRubbing = createAsyncThunk(
   'rubbing/update',
   async (payload: { id: string; patch: Partial<Rubbing> }, { dispatch }) => {
-    await db.rubbings.update(payload.id, { ...payload.patch, updatedAt: Date.now() } as never);
+    const current = await db.rubbings.get(payload.id);
+    const orderIdChanged =
+      Object.prototype.hasOwnProperty.call(payload.patch, 'orderId') && current?.orderId !== payload.patch.orderId;
+    // 改挂/摘掉工单或改动拓法，都会影响对账结论：重置为待对账（摘单则删除对账记录）
+    const methodChanged =
+      current && Object.prototype.hasOwnProperty.call(payload.patch, 'method') && payload.patch.method !== current.method;
+    const nextOrderId = Object.prototype.hasOwnProperty.call(payload.patch, 'orderId')
+      ? (payload.patch.orderId ?? null)
+      : (current?.orderId ?? null);
+    const invalidateRecon = orderIdChanged || (methodChanged && nextOrderId !== null);
+
+    await db.transaction('rw', [db.rubbings, db.recons], async () => {
+      await db.rubbings.update(payload.id, { ...payload.patch, updatedAt: Date.now() } as never);
+      if (invalidateRecon) {
+        await db.recons.where('rubbingId').equals(payload.id).delete();
+        if (nextOrderId) {
+          const now = Date.now();
+          await db.recons.put({
+            id: createId('recon'),
+            orderId: nextOrderId,
+            rubbingId: payload.id,
+            status: 'pending',
+            reason: '',
+            checkedAt: null,
+            checker: '',
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+      }
+    });
     await dispatch(loadRubbings());
   },
 );
@@ -73,6 +138,8 @@ export const advanceRubbingState = createAsyncThunk(
     if (!row) return;
     const next = nextRubbingState(row.state);
     if (next === row.state) return;
+    // 推进到「已编目」前必须通过工单对账
+    if (next === 'cataloged') await assertCanCatalog(id);
     await db.rubbings.update(id, { state: next, updatedAt: Date.now() } as never);
     await dispatch(loadRubbings());
   },
@@ -83,6 +150,12 @@ export const batchUpdateRubbings = createAsyncThunk(
   async (payload: { ids: string[]; patch: Partial<Rubbing> }, { dispatch, getState }) => {
     const state = getState() as RootState;
     const now = Date.now();
+    // 批量改「已编目」时逐份把关，不满足的整批拒绝并提示第一份的原因
+    if (payload.patch.state === 'cataloged') {
+      for (const id of payload.ids) {
+        await assertCanCatalog(id);
+      }
+    }
     const rows = state.rubbing.items
       .filter((item) => payload.ids.includes(item.id))
       .map((item) => ({ ...item, ...payload.patch, updatedAt: now }));

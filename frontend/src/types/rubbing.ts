@@ -18,6 +18,8 @@ export interface Rubbing {
   steleId: string;
   /** 同一碑刻下的版本序号，从 1 开始，自动生成 */
   versionNo: number;
+  /** 所挂传拓工单 id；未挂工单为 null（老拓本可不挂） */
+  orderId: string | null;
   /** 拓法 */
   method: RubbingMethod;
   /** 纸种 */
@@ -92,6 +94,7 @@ export function createEmptyRubbingDraft(steleId: string, versionNo: number): Rub
   return {
     steleId,
     versionNo,
+    orderId: null,
     method: 'rub',
     paperType: '宣纸',
     inkTone: 'thick',

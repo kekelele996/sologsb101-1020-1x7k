@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   App as AntdApp,
+  Alert,
   Button,
   Card,
   Form,
@@ -16,12 +17,20 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, EditOutlined, PlusOutlined, TagsOutlined } from '@ant-design/icons';
+import {
+  AuditOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+  TagsOutlined,
+} from '@ant-design/icons';
 import EmptyPanel from '@/components/common/EmptyPanel';
 import FilterBar, { useFilterQuery, type FilterSelectConfig } from '@/components/common/FilterBar';
+import ReconTag from '@/components/common/ReconTag';
 import StatBadge from '@/components/common/StatBadge';
 import { useAppDispatch, useAppSelector } from '@/stores/store';
 import { selectSteles, setCurrentStele } from '@/stores/steleSlice';
@@ -45,6 +54,7 @@ import {
   updateRubbing,
   updateSeal,
 } from '@/stores/rubbingSlice';
+import { checkRecon, selectOrders, selectRecons } from '@/stores/orderSlice';
 import {
   INK_TONE_LABEL,
   INK_TONE_OPTIONS,
@@ -72,10 +82,12 @@ import {
   type SealDraft,
   type SealType,
 } from '@/types/seal';
+import { RECON_STATUS_OPTIONS, type ReconStatus } from '@/types/recon';
+import { buildReconViewMap, type ReconViewMap } from '@/utils/reconcile';
 import { selectLosses } from '@/stores/lossSlice';
 import LossTag from '@/components/common/LossTag';
 
-const FILTER_KEYS = ['method', 'state'] as const;
+const FILTER_KEYS = ['method', 'state', 'recon'] as const;
 
 export default function RubbingList() {
   const { message } = AntdApp.useApp();
@@ -88,13 +100,20 @@ export default function RubbingList() {
   const filtered = useAppSelector(selectFilteredRubbings);
   const seals = useAppSelector(selectSeals);
   const losses = useAppSelector(selectLosses);
+  const orders = useAppSelector(selectOrders);
+  const recons = useAppSelector(selectRecons);
   const steleFilterId = useAppSelector((state) => state.rubbing.filters.steleId);
+
+  /** 表单当前所选碑刻：工单候选按它过滤（只能挂本碑的工单） */
+  const formSteleId = (Form.useWatch('steleId', form) as string | undefined) ?? steleFilterId ?? '';
 
   const url = useFilterQuery(FILTER_KEYS);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Rubbing | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchState, setBatchState] = useState<RubbingState>('cataloged');
+  /** 对账状态筛选（组件内 state，URL 同步由 useFilterQuery 负责） */
+  const [reconFilter, setReconFilter] = useState<ReconStatus[]>([]);
 
   const [sealOpen, setSealOpen] = useState(false);
   const [sealRubbing, setSealRubbing] = useState<Rubbing | null>(null);
@@ -106,30 +125,60 @@ export default function RubbingList() {
     dispatch(setRubbingKeyword(url.keyword));
     dispatch(setRubbingMethods((url.values.method ?? []) as RubbingMethod[]));
     dispatch(setRubbingStates((url.values.state ?? []) as RubbingState[]));
+    setReconFilter((url.values.recon ?? []) as ReconStatus[]);
   }, [dispatch, url.keyword, url.values]);
 
   const selects: FilterSelectConfig[] = useMemo(
     () => [
       { key: 'method', label: '拓法', options: RUBBING_METHOD_OPTIONS.map((item) => ({ value: item.value, label: item.label })) },
       { key: 'state', label: '状态', options: RUBBING_STATE_OPTIONS.map((item) => ({ value: item.value, label: item.label })) },
+      { key: 'recon', label: '对账', options: RECON_STATUS_OPTIONS.map((item) => ({ value: item.value, label: item.label })) },
     ],
     [],
   );
 
+  /** 拓本 → 实时对账状态视图（待对账 / 已挂起 / 待复核 / 对账相符） */
+  const reconViewMap: ReconViewMap = useMemo(
+    () => buildReconViewMap(rubbings, orders, recons),
+    [orders, recons, rubbings],
+  );
+
+  const orderMap = useMemo(() => new Map(orders.map((order) => [order.id, order])), [orders]);
+
   const stat = useMemo(() => {
     const total = rubbings.length;
     const cataloged = rubbings.filter((rubbing) => rubbing.state === 'cataloged').length;
+    const matchedCount = rubbings.filter((rubbing) => reconViewMap[rubbing.id]?.status === 'matched').length;
+    const heldCount = rubbings.filter((rubbing) => reconViewMap[rubbing.id]?.status === 'held').length;
+    const recheckCount = rubbings.filter((rubbing) => reconViewMap[rubbing.id]?.status === 'recheck').length;
+    const pendingReconCount = rubbings.filter(
+      (rubbing) => rubbing.orderId && reconViewMap[rubbing.id]?.status === 'pending',
+    ).length;
     return {
       total,
       cataloged,
       catalogedPercent: total === 0 ? 0 : Math.round((cataloged / total) * 100),
       toCompare: rubbings.filter((rubbing) => rubbing.state === 'toCompare').length,
+      matchedCount,
+      heldCount,
+      recheckCount,
+      pendingReconCount,
       seals: seals.length,
       losses: losses.length,
     };
-  }, [losses.length, rubbings, seals.length]);
+  }, [losses.length, reconViewMap, rubbings, seals.length]);
 
   const steleTitle = (steleId: string): string => steles.find((stele) => stele.id === steleId)?.title ?? steleId;
+  const orderOf = (orderId: string | null) => (orderId ? orderMap.get(orderId) : undefined);
+
+  /** 同碑工单候选：登记拓本时只能挂本碑的工单 */
+  const orderOptionsFor = (steleId: string) =>
+    orders
+      .filter((order) => order.steleId === steleId)
+      .map((order) => ({
+        value: order.id,
+        label: `${order.orderNo}（${RUBBING_METHOD_LABEL[order.method]}·${order.plannedCount}张·${order.rubDate}）`,
+      }));
 
   const nextVersionNo = (steleId: string): number => {
     const list = rubbings.filter((rubbing) => rubbing.steleId === steleId);
@@ -152,6 +201,7 @@ export default function RubbingList() {
     form.setFieldsValue({
       steleId: rubbing.steleId,
       versionNo: rubbing.versionNo,
+      orderId: rubbing.orderId,
       method: rubbing.method,
       paperType: rubbing.paperType,
       inkTone: rubbing.inkTone,
@@ -165,14 +215,39 @@ export default function RubbingList() {
 
   const submit = async (): Promise<void> => {
     const values = await form.validateFields();
+    // 改挂工单或改拓法会影响对账结论：已对账的拓本重新进入待对账 / 待复核
     if (editing) {
       await dispatch(updateRubbing({ id: editing.id, patch: values })).unwrap();
       message.success(`已更新第 ${values.versionNo} 版拓本`);
     } else {
       await dispatch(createRubbing(values)).unwrap();
-      message.success(`已登记第 ${values.versionNo} 版拓本`);
+      message.success(
+        values.orderId
+          ? `已登记第 ${values.versionNo} 版拓本并挂上工单，待对账`
+          : `已登记第 ${values.versionNo} 版拓本（未挂工单）`,
+      );
     }
     setOpen(false);
+  };
+
+  /** 按工单核对一份拓本：相符 → 自动已编目；不符 → 挂起并写明原因 */
+  const handleCheck = async (rubbing: Rubbing): Promise<void> => {
+    try {
+      const result = await dispatch(checkRecon({ rubbingId: rubbing.id })).unwrap();
+      if (result.matched) message.success('对账相符，拓本已编目完成');
+      else message.warning(`已挂起：${result.reason}`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '对账失败');
+    }
+  };
+
+  /** 推进状态时把「未对账不能已编目」的把关原因提示出来 */
+  const handleAdvance = async (rubbing: Rubbing): Promise<void> => {
+    try {
+      await dispatch(advanceRubbingState(rubbing.id)).unwrap();
+    } catch (error) {
+      message.warning(error instanceof Error ? error.message : '状态推进失败');
+    }
   };
 
   const openSeals = (rubbing: Rubbing): void => {
@@ -197,11 +272,20 @@ export default function RubbingList() {
     sealForm.setFieldsValue(createEmptySealDraft(sealRubbing.id));
   };
 
+  /** 拓法/状态筛选后，再按对账状态（实时派生）过滤 */
+  const visibleRows = useMemo(() => {
+    if (reconFilter.length === 0) return filtered;
+    return filtered.filter((rubbing) => {
+      if (!rubbing.orderId) return false;
+      return reconFilter.includes(reconViewMap[rubbing.id]?.status ?? 'pending');
+    });
+  }, [filtered, reconFilter, reconViewMap]);
+
   const columns: ColumnsType<Rubbing> = [
     {
       title: '版本',
       dataIndex: 'versionNo',
-      width: 90,
+      width: 100,
       sorter: (a, b) => a.versionNo - b.versionNo,
       render: (value: number, record) => (
         <Space size={4}>
@@ -210,13 +294,29 @@ export default function RubbingList() {
         </Space>
       ),
     },
-    { title: '碑刻', dataIndex: 'steleId', width: 130, render: (value: string) => steleTitle(value) },
-    { title: '拓法', dataIndex: 'method', width: 100, render: (value: RubbingMethod) => RUBBING_METHOD_LABEL[value] },
+    { title: '碑刻', dataIndex: 'steleId', width: 120, render: (value: string) => steleTitle(value) },
+    {
+      title: '工单 / 对账',
+      dataIndex: 'orderId',
+      width: 170,
+      render: (orderId: string | null, record) => {
+        if (!orderId) return <Typography.Text type="secondary" style={{ fontSize: 12 }}>未挂工单</Typography.Text>;
+        const order = orderOf(orderId);
+        const view = reconViewMap[record.id];
+        return (
+          <Space direction="vertical" size={0}>
+            <Typography.Text style={{ fontSize: 12 }}>{order?.orderNo ?? '工单已删'}</Typography.Text>
+            {view ? <ReconTag status={view.status} reason={view.reason} orderNo={order?.orderNo} size="small" /> : null}
+          </Space>
+        );
+      },
+    },
+    { title: '拓法', dataIndex: 'method', width: 90, render: (value: RubbingMethod) => RUBBING_METHOD_LABEL[value] },
     { title: '纸种', dataIndex: 'paperType', width: 100 },
-    { title: '墨色', dataIndex: 'inkTone', width: 90, render: (value: InkTone) => INK_TONE_LABEL[value] },
-    { title: '尺寸', dataIndex: 'sizeCm', width: 110, render: (value: string) => value || '未记' },
-    { title: '收藏号', dataIndex: 'collectionNo', width: 120, render: (value: string) => value || '未编' },
-    { title: '年代判断', dataIndex: 'dateGuess', width: 120, render: (value: string) => value || '待考' },
+    { title: '墨色', dataIndex: 'inkTone', width: 80, render: (value: InkTone) => INK_TONE_LABEL[value] },
+    { title: '尺寸', dataIndex: 'sizeCm', width: 100, render: (value: string) => value || '未记' },
+    { title: '收藏号', dataIndex: 'collectionNo', width: 110, render: (value: string) => value || '未编' },
+    { title: '年代判断', dataIndex: 'dateGuess', width: 110, render: (value: string) => value || '待考' },
     {
       title: '损泐 / 钤印',
       key: 'counts',
@@ -235,36 +335,57 @@ export default function RubbingList() {
     {
       title: '操作',
       key: 'action',
-      width: 250,
-      render: (_value, record) => (
-        <Space size={4} wrap>
-          <Button size="small" type="link" onClick={() => void dispatch(advanceRubbingState(record.id))}>
-            推进状态
-          </Button>
-          <Button size="small" type="link" icon={<TagsOutlined />} onClick={() => openSeals(record)}>
-            钤印
-          </Button>
-          <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>
-            编辑
-          </Button>
-          <Popconfirm
-            title="删除拓本"
-            description="将同时删除其损泐字位与钤印记录。"
-            okText="确认"
-            cancelText="取消"
-            onConfirm={() =>
-              void dispatch(removeRubbing(record.id))
-                .unwrap()
-                .then(() => dispatch(loadRubbings()))
-                .then(() => message.success('已删除拓本'))
-            }
-          >
-            <Button size="small" type="link" danger icon={<DeleteOutlined />}>
-              删除
+      width: 300,
+      render: (_value, record) => {
+        const view = reconViewMap[record.id];
+        const reconLabel = !record.orderId
+          ? '挂单对账'
+          : view?.status === 'matched'
+            ? '重新对账'
+            : view?.status === 'recheck'
+              ? '复核'
+              : '对账';
+        return (
+          <Space size={4} wrap>
+            {record.orderId ? (
+              <Tooltip title={view?.reason || (view?.status === 'matched' ? '再次核对张数与拓法' : '按工单核对张数与拓法')}>
+                <Button size="small" type="link" icon={<AuditOutlined />} onClick={() => void handleCheck(record)}>
+                  {reconLabel}
+                </Button>
+              </Tooltip>
+            ) : (
+              <Button size="small" type="link" icon={<AuditOutlined />} onClick={() => openEdit(record)}>
+                挂单对账
+              </Button>
+            )}
+            <Button size="small" type="link" onClick={() => void handleAdvance(record)}>
+              推进状态
             </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            <Button size="small" type="link" icon={<TagsOutlined />} onClick={() => openSeals(record)}>
+              钤印
+            </Button>
+            <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+              编辑
+            </Button>
+            <Popconfirm
+              title="删除拓本"
+              description="将同时删除其对账记录、损泐字位与钤印记录。"
+              okText="确认"
+              cancelText="取消"
+              onConfirm={() =>
+                void dispatch(removeRubbing(record.id))
+                  .unwrap()
+                  .then(() => dispatch(loadRubbings()))
+                  .then(() => message.success('已删除拓本'))
+              }
+            >
+              <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -278,8 +399,8 @@ export default function RubbingList() {
     <div>
       <div className="gb-page-head">
         <div>
-          <h2>拓本登记</h2>
-          <p>录入拓法、纸墨、尺寸与收藏号；同一碑刻下自动生成版本序号，并可管理钤印与批量改状态。</p>
+          <h2>拓本登记 · 工单对账</h2>
+          <p>编目员照常登记拓法、纸墨、尺寸与收藏号；登记时挂上传拓工单，张数或拓法核对不符先挂起，传拓组改单后退回待复核，相符才算编目完成。</p>
         </div>
         <Space wrap>
           <Select
@@ -302,9 +423,11 @@ export default function RubbingList() {
       <div className="gb-stat-row">
         <StatBadge label="拓本总数" value={stat.total} suffix="份" tone="primary" />
         <StatBadge label="已编目占比" value={`${stat.catalogedPercent}%`} percent={stat.catalogedPercent} tone="success" />
-        <StatBadge label="待比对" value={stat.toCompare} suffix="份" tone="warning" />
-        <StatBadge label="钤印总数" value={stat.seals} suffix="方" tone="info" />
-        <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="danger" />
+        <StatBadge label="对账相符" value={stat.matchedCount} suffix="份" tone="info" />
+        <StatBadge label="已挂起" value={stat.heldCount} suffix="份" tone="danger" />
+        <StatBadge label="待复核" value={stat.recheckCount} suffix="份" tone="warning" />
+        <StatBadge label="待对账" value={stat.pendingReconCount} suffix="份" />
+        <StatBadge label="待比对" value={stat.toCompare} suffix="份" />
       </div>
 
       <FilterBar
@@ -337,6 +460,9 @@ export default function RubbingList() {
                     message.success(`已批量置为${RUBBING_STATE_LABEL[batchState]}`);
                     setSelectedIds([]);
                   })
+                  .catch((error: unknown) => {
+                    message.warning(error instanceof Error ? error.message : '批量改状态失败');
+                  })
               }
             >
               批量改状态
@@ -345,14 +471,24 @@ export default function RubbingList() {
         }
       />
 
+      {stat.heldCount + stat.recheckCount > 0 ? (
+        <Alert
+          style={{ marginTop: 12 }}
+          type="warning"
+          showIcon
+          message={`${stat.heldCount} 份拓本因张数或拓法不符已挂起，${stat.recheckCount} 份因传拓组改单退回待复核`}
+          description="鼠标悬停「已挂起 / 待复核」标签可查看原因；传拓组在传拓工单台改单后，编目员点「复核」重新核对。"
+        />
+      ) : null}
+
       <Card className="gb-table-card" style={{ marginTop: 16 }} styles={{ body: { padding: 0 } }}>
-        {filtered.length === 0 ? (
+        {visibleRows.length === 0 ? (
           <EmptyPanel
             title={rubbings.length === 0 ? '还没有登记拓本' : '当前筛选条件下没有拓本'}
             description={
               rubbings.length === 0
-                ? '为碑刻登记第一份拓本，记录拓法、纸墨与收藏号，版本序号会自动生成。'
-                : '试着调整拓法或状态筛选条件。'
+                ? '为碑刻登记第一份拓本并挂上传拓工单，拓法、纸墨、收藏号照常登记，版本序号会自动生成。'
+                : '试着调整拓法、状态或对账筛选条件。'
             }
             actionText="登记拓本"
             onAction={openCreate}
@@ -366,7 +502,7 @@ export default function RubbingList() {
             size="small"
             pagination={{ pageSize: 8 }}
             columns={columns}
-            dataSource={filtered}
+            dataSource={visibleRows}
             rowSelection={{
               selectedRowKeys: selectedIds,
               onChange: (keys) => setSelectedIds(keys.map((key) => String(key))),
@@ -389,13 +525,25 @@ export default function RubbingList() {
             <Form.Item name="steleId" label="所属碑刻" rules={[{ required: true }]} style={{ flex: 2 }}>
               <Select
                 options={steles.map((stele) => ({ value: stele.id, label: stele.title }))}
-                onChange={(value: string) => form.setFieldsValue({ versionNo: nextVersionNo(value) })}
+                onChange={(value: string) => form.setFieldsValue({ orderId: null, versionNo: nextVersionNo(value) })}
               />
             </Form.Item>
             <Form.Item name="versionNo" label="版本序号" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Input type="number" min={1} />
             </Form.Item>
           </Space>
+          <Form.Item
+            name="orderId"
+            label="传拓工单"
+            extra="挂上对应工单后，这份拓本须与工单对账相符才算编目完成；改挂工单会重置对账。"
+          >
+            <Select
+              allowClear
+              placeholder="选择本碑的传拓工单（可不挂）"
+              options={orderOptionsFor(formSteleId)}
+              notFoundContent="该碑刻下还没有工单，可先到传拓工单台开工单"
+            />
+          </Form.Item>
           <Space size={12} style={{ display: 'flex' }}>
             <Form.Item name="method" label="拓法" rules={[{ required: true }]} style={{ flex: 1 }}>
               <Select options={[...RUBBING_METHOD_OPTIONS]} />

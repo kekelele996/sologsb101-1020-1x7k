@@ -7,17 +7,19 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { App as AntdApp, Badge, Button, Layout, Menu, Space, Tag, Typography } from 'antd';
 import {
   AppstoreOutlined,
+  AuditOutlined,
   BookOutlined,
   DiffOutlined,
   ExportOutlined,
   FileSearchOutlined,
-  PrinterOutlined,
+  ProfileOutlined,
 } from '@ant-design/icons';
 import { ROUTES } from './router';
 import { loadAll, useAppDispatch, useAppSelector } from './stores/store';
 import { selectSteles } from './stores/steleSlice';
 import { selectRubbings } from './stores/rubbingSlice';
 import { selectLosses } from './stores/lossSlice';
+import { selectOrders } from './stores/orderSlice';
 import { initDatabase } from './utils/db';
 import { STELE_FORM_LABEL } from './types/stele';
 
@@ -30,6 +32,7 @@ export default function App() {
   const dispatch = useAppDispatch();
 
   const steles = useAppSelector(selectSteles);
+  const orders = useAppSelector(selectOrders);
   const rubbings = useAppSelector(selectRubbings);
   const losses = useAppSelector(selectLosses);
   const currentSteleId = useAppSelector((state) => state.stele.currentSteleId);
@@ -52,15 +55,17 @@ export default function App() {
   }, [dispatch, message]);
 
   const currentStele = steles.find((stele) => stele.id === currentSteleId) ?? null;
-  const selectedKey = location.pathname.startsWith('/rubbings')
-    ? ROUTES.rubbings
-    : location.pathname.startsWith('/losses')
-      ? ROUTES.losses
-      : location.pathname.startsWith('/compare')
-        ? ROUTES.compare
-        : location.pathname.startsWith('/export')
-          ? ROUTES.export
-          : ROUTES.steles;
+  const selectedKey = location.pathname.startsWith('/orders')
+    ? ROUTES.orders
+    : location.pathname.startsWith('/rubbings')
+      ? ROUTES.rubbings
+      : location.pathname.startsWith('/losses')
+        ? ROUTES.losses
+        : location.pathname.startsWith('/compare')
+          ? ROUTES.compare
+          : location.pathname.startsWith('/export')
+            ? ROUTES.export
+            : ROUTES.steles;
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
@@ -81,7 +86,8 @@ export default function App() {
           onClick={({ key }) => navigate(key)}
           items={[
             { key: ROUTES.steles, icon: <AppstoreOutlined />, label: '碑刻台账' },
-            { key: ROUTES.rubbings, icon: <PrinterOutlined />, label: '拓本登记' },
+            { key: ROUTES.orders, icon: <ProfileOutlined />, label: '传拓工单' },
+            { key: ROUTES.rubbings, icon: <AuditOutlined />, label: '拓本登记（对账）' },
             { key: ROUTES.losses, icon: <BookOutlined />, label: '损泐字位' },
             { key: ROUTES.compare, icon: <DiffOutlined />, label: '版本比对' },
             { key: ROUTES.export, icon: <ExportOutlined />, label: '编目卡导出' },
@@ -92,6 +98,7 @@ export default function App() {
             <span>
               <FileSearchOutlined /> 碑刻 {steles.length} 处
             </span>
+            <span>传拓工单 {orders.length} 张</span>
             <span>拓本 {rubbings.length} 份</span>
             <span>损泐字位 {losses.length} 条</span>
           </Space>

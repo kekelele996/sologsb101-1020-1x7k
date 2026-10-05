@@ -34,9 +34,12 @@ import { loadAll } from '@/stores/store';
 import { selectSteles, setCurrentStele } from '@/stores/steleSlice';
 import { selectRubbings } from '@/stores/rubbingSlice';
 import { selectCompares, selectLosses } from '@/stores/lossSlice';
+import { selectOrders, selectRecons } from '@/stores/orderSlice';
 import { SEAL_TYPE_COLOR, SEAL_TYPE_LABEL, sealPositionWeight, type Seal, type SealType } from '@/types/seal';
 import { RUBBING_METHOD_LABEL, RUBBING_STATE_LABEL } from '@/types/rubbing';
 import { COMPARE_CONCLUSION_COLOR, COMPARE_CONCLUSION_LABEL } from '@/types/compare';
+import ReconTag from '@/components/common/ReconTag';
+import { buildReconViewMap } from '@/utils/reconcile';
 import {
   DB_NAME,
   DB_SCHEMA_VERSION,
@@ -66,6 +69,8 @@ export default function ExportView() {
   const rubbings = useAppSelector(selectRubbings);
   const losses = useAppSelector(selectLosses);
   const compares = useAppSelector(selectCompares);
+  const orders = useAppSelector(selectOrders);
+  const recons = useAppSelector(selectRecons);
   const sealTable = useIdbTable<Seal>((database) => database.seals, { sortByUpdatedAt: false });
 
   const [steleId, setSteleId] = useState<string>('');
@@ -81,9 +86,17 @@ export default function ExportView() {
       losses,
       seals: sealTable.rows,
       compares,
+      orders,
+      recons,
     }),
-    [compares, losses, rubbings, sealTable.rows, steles],
+    [compares, losses, orders, recons, rubbings, sealTable.rows, steles],
   );
+
+  const reconViewMap = useMemo(
+    () => buildReconViewMap(rubbings, orders, recons),
+    [orders, recons, rubbings],
+  );
+  const orderNoById = useMemo(() => new Map(orders.map((order) => [order.id, order.orderNo])), [orders]);
 
   const allCardsLength = useMemo(() => buildAllCatalogCards(context).length, [context]);
 
@@ -96,24 +109,28 @@ export default function ExportView() {
             losses,
             sealTable.rows,
             compares,
+            orders,
+            recons,
           )
         : '请选择碑刻。',
-    [compares, losses, rubbings, sealTable.rows, stele],
+    [compares, losses, orders, recons, rubbings, sealTable.rows, stele],
   );
 
   const stat = useMemo(
     () => ({
       steles: steles.length,
+      orders: orders.length,
       rubbings: rubbings.length,
       losses: losses.length,
       seals: sealTable.rows.length,
       compares: compares.length,
+      matchedRecons: rubbings.filter((rubbing) => reconViewMap[rubbing.id]?.status === 'matched').length,
       passPercent:
         compares.length === 0
           ? 0
           : Math.round((compares.filter((compare) => compare.conclusion !== 'pending').length / compares.length) * 100),
     }),
-    [compares, losses.length, rubbings.length, sealTable.rows.length, steles.length],
+    [compares, losses.length, orders.length, reconViewMap, rubbings, sealTable.rows.length, steles.length],
   );
 
   const handleExport = async (): Promise<void> => {
@@ -236,11 +253,12 @@ export default function ExportView() {
 
       <div className="gb-stat-row">
         <StatBadge label="碑刻" value={stat.steles} suffix="处" tone="primary" />
+        <StatBadge label="传拓工单" value={stat.orders} suffix="张" />
         <StatBadge label="拓本" value={stat.rubbings} suffix="份" tone="info" />
+        <StatBadge label="对账相符" value={stat.matchedRecons} suffix="份" tone="success" />
         <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="warning" />
         <StatBadge label="钤印" value={stat.seals} suffix="方" />
         <StatBadge label="比对记录" value={stat.compares} suffix="条" tone="danger" />
-        <StatBadge label="已定断代占比" value={`${stat.passPercent}%`} percent={stat.passPercent} tone="success" />
       </div>
 
       <Row gutter={16}>
@@ -271,6 +289,8 @@ export default function ExportView() {
                       losses,
                       sealTable.rows,
                       compares,
+                      orders,
+                      recons,
                     );
                     message.success(`已导出 ${filename}`);
                   }}
@@ -306,6 +326,8 @@ export default function ExportView() {
                       losses,
                       sealTable.rows,
                       compares,
+                      orders,
+                      recons,
                     );
                     message.success(`已导出 ${filename}（含全部碑刻）`);
                   }}
@@ -354,7 +376,7 @@ export default function ExportView() {
           <Card title="整库导出" style={{ marginTop: 16 }}>
             <Space direction="vertical" size={10} style={{ width: '100%' }}>
               <Typography.Text type="secondary">
-                导出文件包含 5 张业务表全量数据与结构版本号，可在其他设备通过「导入 JSON」还原。
+                导出文件包含 7 张业务表（含传拓工单与对账记录）全量数据与结构版本号，可在其他设备通过「导入 JSON」还原。
               </Typography.Text>
               <Space wrap>
                 <Button icon={<CloudDownloadOutlined />} onClick={() => void handleExport()}>
@@ -385,28 +407,41 @@ export default function ExportView() {
               ) : (
                 rubbings
                   .filter((rubbing) => rubbing.steleId === activeSteleId)
-                  .map((rubbing) => (
-                    <Space key={rubbing.id} size={6} wrap>
-                      <Tag color="#2f3a34">第 {rubbing.versionNo} 版</Tag>
-                      <Tag>{RUBBING_METHOD_LABEL[rubbing.method]}</Tag>
-                      <Tag color="gold">{RUBBING_STATE_LABEL[rubbing.state]}</Tag>
-                      <Space size={4} wrap>
-                        {losses
-                          .filter((loss) => loss.rubbingId === rubbing.id)
-                          .slice(0, 2)
-                          .map((loss) => (
-                            <LossTag
-                              key={loss.id}
-                              type={loss.type}
-                              severity={loss.severity}
-                              lineNo={loss.lineNo}
-                              charNo={loss.charNo}
-                              size="small"
-                            />
-                          ))}
+                  .map((rubbing) => {
+                    const view = reconViewMap[rubbing.id];
+                    return (
+                      <Space key={rubbing.id} size={6} wrap>
+                        <Tag color="#2f3a34">第 {rubbing.versionNo} 版</Tag>
+                        <Tag>{RUBBING_METHOD_LABEL[rubbing.method]}</Tag>
+                        <Tag color="gold">{RUBBING_STATE_LABEL[rubbing.state]}</Tag>
+                        {view ? (
+                          <ReconTag
+                            status={view.status}
+                            reason={view.reason}
+                            orderNo={view.orderId ? orderNoById.get(view.orderId) : undefined}
+                            size="small"
+                          />
+                        ) : (
+                          <Tag>未挂工单</Tag>
+                        )}
+                        <Space size={4} wrap>
+                          {losses
+                            .filter((loss) => loss.rubbingId === rubbing.id)
+                            .slice(0, 2)
+                            .map((loss) => (
+                              <LossTag
+                                key={loss.id}
+                                type={loss.type}
+                                severity={loss.severity}
+                                lineNo={loss.lineNo}
+                                charNo={loss.charNo}
+                                size="small"
+                              />
+                            ))}
+                        </Space>
                       </Space>
-                    </Space>
-                  ))
+                    );
+                  })
               )}
               {compares
                 .filter((compare) => compare.steleId === activeSteleId)

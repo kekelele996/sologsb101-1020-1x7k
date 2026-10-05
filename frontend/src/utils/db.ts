@@ -1,7 +1,9 @@
 /**
  * IndexedDB 持久化层（Dexie 封装）
- * - 数据结构版本号与升级迁移逻辑（v1 → v2：Loss 增加 charNo 与复合索引，并按行号顺序重建历史字位记录）
- * - 五张业务表的增删改查与整库导入导出
+ * - 数据结构版本号与升级迁移逻辑
+ *   v1 → v2：Loss 增加 charNo 与复合索引，并按行号顺序重建历史字位记录
+ *   v2 → v3：新增 orders 传拓工单表与 recons 工单对账表，rubbings 增加 orderId 索引
+ * - 七张业务表的增删改查与整库导入导出
  * - 首次打开自动播种三层互相引用的演示数据（幂等）
  * 纯前端应用：不依赖任何后端服务或数据库。
  */
@@ -11,13 +13,15 @@ import type { Rubbing } from '@/types/rubbing';
 import type { Loss } from '@/types/loss';
 import type { Seal } from '@/types/seal';
 import type { Compare } from '@/types/compare';
+import type { WorkOrder } from '@/types/workOrder';
+import type { Recon } from '@/types/recon';
 import { sortLosses } from './collate';
 
 /** 数据库名（README 与导出文件均使用该名称） */
 export const DB_NAME = 'gbrubbing';
 
 /** 当前数据结构版本号 */
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 /** localStorage 侧少量元数据键 */
 export const LS_KEYS = {
@@ -85,6 +89,8 @@ class RubbingDatabase extends Dexie {
   losses!: Table<Loss, string>;
   seals!: Table<Seal, string>;
   compares!: Table<Compare, string>;
+  orders!: Table<WorkOrder, string>;
+  recons!: Table<Recon, string>;
 
   constructor() {
     super(DB_NAME);
@@ -99,7 +105,7 @@ class RubbingDatabase extends Dexie {
     });
 
     // v2：Loss 增加 charNo 与 [rubbingId+lineNo+charNo] 复合索引，并按行号顺序重建历史字位记录
-    this.version(DB_SCHEMA_VERSION)
+    this.version(2)
       .stores({
         steles: 'id, title, era, form, location, updatedAt',
         rubbings: 'id, steleId, versionNo, method, inkTone, state, updatedAt',
@@ -128,6 +134,18 @@ class RubbingDatabase extends Dexie {
         });
         await table.bulkPut(sortLosses(rebuilt));
       });
+
+    // v3：新增传拓工单表 orders、工单对账表 recons；rubbings 增加 orderId 索引
+    // 老拓本的 orderId 缺省为 null，无需数据迁移
+    this.version(DB_SCHEMA_VERSION).stores({
+      steles: 'id, title, era, form, location, updatedAt',
+      rubbings: 'id, steleId, orderId, versionNo, method, inkTone, state, updatedAt',
+      losses: 'id, rubbingId, lineNo, charNo, [rubbingId+lineNo+charNo], type, severity, updatedAt',
+      seals: 'id, rubbingId, sealType, position, updatedAt',
+      compares: 'id, steleId, rubbingIdA, rubbingIdB, conclusion, date, updatedAt',
+      orders: 'id, orderNo, steleId, method, rubDate, updatedAt',
+      recons: 'id, orderId, rubbingId, status, checkedAt, updatedAt',
+    });
   }
 }
 
@@ -192,11 +210,11 @@ export async function seedDatabase(): Promise<void> {
   ];
 
   const rubbings: Rubbing[] = [
-    { id: 'rub_0101', steleId: 'stele_01', versionNo: 1, method: 'rub', paperType: '宣纸', inkTone: 'thick', sizeCm: '210×88', collectionNo: 'TB-0101', dateGuess: '明拓', state: 'cataloged', createdAt: now - day * 50, updatedAt: now - day * 10 },
-    { id: 'rub_0102', steleId: 'stele_01', versionNo: 2, method: 'cicada', paperType: '棉连纸', inkTone: 'light', sizeCm: '208×86', collectionNo: 'TB-0102', dateGuess: '清拓', state: 'toCompare', createdAt: now - day * 44, updatedAt: now - day * 6 },
-    { id: 'rub_0201', steleId: 'stele_02', versionNo: 1, method: 'pat', paperType: '皮纸', inkTone: 'thick', sizeCm: '250×196', collectionNo: 'TB-0201', dateGuess: '清中期拓', state: 'cataloged', createdAt: now - day * 40, updatedAt: now - day * 5 },
-    { id: 'rub_0202', steleId: 'stele_02', versionNo: 2, method: 'rub', paperType: '棉连纸', inkTone: 'light', sizeCm: '248×194', collectionNo: 'TB-0202', dateGuess: '清晚期拓', state: 'toCatalog', createdAt: now - day * 34, updatedAt: now - day * 4 },
-    { id: 'rub_0301', steleId: 'stele_03', versionNo: 1, method: 'rub', paperType: '净皮宣', inkTone: 'thick', sizeCm: '260×90', collectionNo: 'TB-0301', dateGuess: '民国拓', state: 'toCatalog', createdAt: now - day * 20, updatedAt: now - day * 2 },
+    { id: 'rub_0101', steleId: 'stele_01', versionNo: 1, orderId: 'order_01', method: 'rub', paperType: '宣纸', inkTone: 'thick', sizeCm: '210×88', collectionNo: 'TB-0101', dateGuess: '明拓', state: 'cataloged', createdAt: now - day * 50, updatedAt: now - day * 10 },
+    { id: 'rub_0102', steleId: 'stele_01', versionNo: 2, orderId: null, method: 'cicada', paperType: '棉连纸', inkTone: 'light', sizeCm: '208×86', collectionNo: 'TB-0102', dateGuess: '清拓', state: 'toCompare', createdAt: now - day * 44, updatedAt: now - day * 6 },
+    { id: 'rub_0201', steleId: 'stele_02', versionNo: 1, orderId: 'order_02', method: 'pat', paperType: '皮纸', inkTone: 'thick', sizeCm: '250×196', collectionNo: 'TB-0201', dateGuess: '清中期拓', state: 'cataloged', createdAt: now - day * 40, updatedAt: now - day * 5 },
+    { id: 'rub_0202', steleId: 'stele_02', versionNo: 2, orderId: 'order_02', method: 'rub', paperType: '棉连纸', inkTone: 'light', sizeCm: '248×194', collectionNo: 'TB-0202', dateGuess: '清晚期拓', state: 'toCatalog', createdAt: now - day * 34, updatedAt: now - day * 4 },
+    { id: 'rub_0301', steleId: 'stele_03', versionNo: 1, orderId: 'order_03', method: 'rub', paperType: '净皮宣', inkTone: 'thick', sizeCm: '260×90', collectionNo: 'TB-0301', dateGuess: '民国拓', state: 'toCatalog', createdAt: now - day * 20, updatedAt: now - day * 2 },
   ];
 
   const losses: Loss[] = [
@@ -224,13 +242,108 @@ export async function seedDatabase(): Promise<void> {
     { id: 'cmp_0201', steleId: 'stele_02', rubbingIdA: 'rub_0201', rubbingIdB: 'rub_0202', diffCount: 1, conclusion: 'late', operator: '傅砚', date: '2026-03-08', createdAt: now - day * 3, updatedAt: now - day * 3 },
   ];
 
-  await db.transaction('rw', [db.steles, db.rubbings, db.losses, db.seals, db.compares], async () => {
-    await db.steles.bulkPut(steles);
-    await db.rubbings.bulkPut(rubbings);
-    await db.losses.bulkPut(losses);
-    await db.seals.bulkPut(seals);
-    await db.compares.bulkPut(compares);
-  });
+  // 传拓工单：写明哪块碑、哪天、什么拓法、拓几张
+  const orders: WorkOrder[] = [
+    {
+      id: 'order_01',
+      orderNo: 'GD20260812-01',
+      steleId: 'stele_01',
+      rubDate: '2026-08-12',
+      method: 'rub',
+      plannedCount: 1,
+      operator: '陈拓',
+      note: '宣纸上墨，局部补拓',
+      createdAt: now - day * 52,
+      updatedAt: now - day * 52,
+    },
+    {
+      id: 'order_02',
+      orderNo: 'GD20260820-01',
+      steleId: 'stele_02',
+      rubDate: '2026-08-20',
+      method: 'pat',
+      plannedCount: 2,
+      operator: '陈拓',
+      note: '崖面凹凸，改用扑拓',
+      createdAt: now - day * 42,
+      updatedAt: now - day * 42,
+    },
+    {
+      // 传拓组原工单写 2 张蝉翼拓，核对时张数、拓法都不符；改单后退回待复核
+      id: 'order_03',
+      orderNo: 'GD20260922-01',
+      steleId: 'stele_03',
+      rubDate: '2026-09-22',
+      method: 'rub',
+      plannedCount: 1,
+      operator: '李南',
+      note: '已改为 1 张擦拓，待编目室复核',
+      createdAt: now - day * 24,
+      updatedAt: now - day * 1,
+    },
+  ];
+
+  // 工单对账记录：一条拓本一条；状态与原因由对账引擎结合工单实时派生
+  const recons: Recon[] = [
+    {
+      id: 'recon_0101',
+      orderId: 'order_01',
+      rubbingId: 'rub_0101',
+      status: 'matched',
+      reason: '',
+      checkedAt: now - day * 9,
+      checker: '编目员',
+      createdAt: now - day * 10,
+      updatedAt: now - day * 9,
+    },
+    {
+      id: 'recon_0201',
+      orderId: 'order_02',
+      rubbingId: 'rub_0201',
+      status: 'matched',
+      reason: '',
+      checkedAt: now - day * 4,
+      checker: '编目员',
+      createdAt: now - day * 6,
+      updatedAt: now - day * 4,
+    },
+    {
+      id: 'recon_0202',
+      orderId: 'order_02',
+      rubbingId: 'rub_0202',
+      status: 'held',
+      reason: '拓法不符：工单为扑拓，拓本登记为擦拓',
+      checkedAt: now - day * 4,
+      checker: '编目员',
+      createdAt: now - day * 6,
+      updatedAt: now - day * 4,
+    },
+    {
+      id: 'recon_0301',
+      orderId: 'order_03',
+      rubbingId: 'rub_0301',
+      status: 'held',
+      reason: '张数不符：工单计划 2 张，实际挂 1 张；拓法不符：工单为蝉翼拓，拓本登记为擦拓',
+      checkedAt: now - day * 2,
+      checker: '编目员',
+      createdAt: now - day * 3,
+      updatedAt: now - day * 2,
+    },
+  ];
+
+  await db.transaction(
+    'rw',
+    [db.steles, db.rubbings, db.losses, db.seals, db.compares, db.orders, db.recons],
+    async () => {
+      await db.steles.bulkPut(steles);
+      await db.rubbings.bulkPut(rubbings);
+      await db.losses.bulkPut(losses);
+      await db.seals.bulkPut(seals);
+      await db.compares.bulkPut(compares);
+      await db.orders.bulkPut(orders);
+      await db.recons.bulkPut(recons);
+    },
+  );
 }
 
 /* ------------------------------ 整库导入导出 ------------------------------ */
@@ -244,15 +357,19 @@ export interface RubbingSnapshot {
   losses: Loss[];
   seals: Seal[];
   compares: Compare[];
+  orders: WorkOrder[];
+  recons: Recon[];
 }
 
 export async function exportSnapshot(): Promise<RubbingSnapshot> {
-  const [steles, rubbings, losses, seals, compares] = await Promise.all([
+  const [steles, rubbings, losses, seals, compares, orders, recons] = await Promise.all([
     db.steles.toArray(),
     db.rubbings.toArray(),
     db.losses.toArray(),
     db.seals.toArray(),
     db.compares.toArray(),
+    db.orders.toArray(),
+    db.recons.toArray(),
   ]);
   return {
     app: DB_NAME,
@@ -263,6 +380,8 @@ export async function exportSnapshot(): Promise<RubbingSnapshot> {
     losses,
     seals,
     compares,
+    orders,
+    recons,
   };
 }
 
@@ -279,26 +398,41 @@ export function validateSnapshot(input: unknown): string {
 }
 
 export async function clearAllTables(): Promise<void> {
-  await db.transaction('rw', [db.steles, db.rubbings, db.losses, db.seals, db.compares], async () => {
-    await Promise.all([
-      db.steles.clear(),
-      db.rubbings.clear(),
-      db.losses.clear(),
-      db.seals.clear(),
-      db.compares.clear(),
-    ]);
-  });
+  await db.transaction(
+    'rw',
+    [db.steles, db.rubbings, db.losses, db.seals, db.compares, db.orders, db.recons],
+    async () => {
+      await Promise.all([
+        db.steles.clear(),
+        db.rubbings.clear(),
+        db.losses.clear(),
+        db.seals.clear(),
+        db.compares.clear(),
+        db.orders.clear(),
+        db.recons.clear(),
+      ]);
+    },
+  );
 }
 
 export async function importSnapshot(snapshot: RubbingSnapshot): Promise<void> {
   await clearAllTables();
-  await db.transaction('rw', [db.steles, db.rubbings, db.losses, db.seals, db.compares], async () => {
-    await db.steles.bulkPut(snapshot.steles);
-    await db.rubbings.bulkPut(snapshot.rubbings);
-    await db.losses.bulkPut(snapshot.losses);
-    await db.seals.bulkPut(snapshot.seals);
-    await db.compares.bulkPut(snapshot.compares);
-  });
+  // 兼容旧版备份（v2 不含工单与对账表）
+  const orders = snapshot.orders ?? [];
+  const recons = snapshot.recons ?? [];
+  await db.transaction(
+    'rw',
+    [db.steles, db.rubbings, db.losses, db.seals, db.compares, db.orders, db.recons],
+    async () => {
+      await db.steles.bulkPut(snapshot.steles);
+      await db.rubbings.bulkPut(snapshot.rubbings.map((row) => ({ ...row, orderId: row.orderId ?? null })));
+      await db.losses.bulkPut(snapshot.losses);
+      await db.seals.bulkPut(snapshot.seals);
+      await db.compares.bulkPut(snapshot.compares);
+      await db.orders.bulkPut(orders);
+      await db.recons.bulkPut(recons);
+    },
+  );
 }
 
 export async function resetDatabase(): Promise<void> {
@@ -307,39 +441,66 @@ export async function resetDatabase(): Promise<void> {
 }
 
 export async function countAll(): Promise<Record<string, number>> {
-  const [steles, rubbings, losses, seals, compares] = await Promise.all([
+  const [steles, rubbings, losses, seals, compares, orders, recons] = await Promise.all([
     db.steles.count(),
     db.rubbings.count(),
     db.losses.count(),
     db.seals.count(),
     db.compares.count(),
+    db.orders.count(),
+    db.recons.count(),
   ]);
-  return { steles, rubbings, losses, seals, compares };
+  return { steles, rubbings, losses, seals, compares, orders, recons };
 }
 
-/** 级联删除碑刻 → 拓本 → 损泐 / 钤印 / 比对 */
+/** 级联删除碑刻 → 工单（连同对账记录）→ 拓本 → 损泐 / 钤印 / 比对 */
 export async function removeSteleCascade(steleId: string): Promise<void> {
   const rubbingIds = (await db.rubbings.where('steleId').equals(steleId).toArray()).map((row) => row.id);
-  await db.transaction('rw', [db.steles, db.rubbings, db.losses, db.seals, db.compares], async () => {
-    if (rubbingIds.length > 0) {
-      await db.losses.where('rubbingId').anyOf(rubbingIds).delete();
-      await db.seals.where('rubbingId').anyOf(rubbingIds).delete();
-    }
-    await db.rubbings.where('steleId').equals(steleId).delete();
-    await db.compares.where('steleId').equals(steleId).delete();
-    await db.steles.delete(steleId);
-  });
+  const orderIds = (await db.orders.where('steleId').equals(steleId).toArray()).map((row) => row.id);
+  await db.transaction(
+    'rw',
+    [db.steles, db.rubbings, db.losses, db.seals, db.compares, db.orders, db.recons],
+    async () => {
+      if (orderIds.length > 0) {
+        await db.recons.where('orderId').anyOf(orderIds).delete();
+        await db.orders.where('steleId').equals(steleId).delete();
+      }
+      if (rubbingIds.length > 0) {
+        await db.recons.where('rubbingId').anyOf(rubbingIds).delete();
+        await db.losses.where('rubbingId').anyOf(rubbingIds).delete();
+        await db.seals.where('rubbingId').anyOf(rubbingIds).delete();
+      }
+      await db.rubbings.where('steleId').equals(steleId).delete();
+      await db.compares.where('steleId').equals(steleId).delete();
+      await db.steles.delete(steleId);
+    },
+  );
 }
 
-/** 级联删除拓本 → 损泐 / 钤印 / 涉及的比对记录 */
+/** 级联删除拓本 → 损泐 / 钤印 / 涉及的比对记录 / 工单对账记录 */
 export async function removeRubbingCascade(rubbingId: string): Promise<void> {
-  await db.transaction('rw', [db.rubbings, db.losses, db.seals, db.compares], async () => {
+  await db.transaction('rw', [db.rubbings, db.losses, db.seals, db.compares, db.recons], async () => {
+    await db.recons.where('rubbingId').equals(rubbingId).delete();
     await db.losses.where('rubbingId').equals(rubbingId).delete();
     await db.seals.where('rubbingId').equals(rubbingId).delete();
     const compares = await db.compares.toArray();
     const affected = compares.filter((row) => row.rubbingIdA === rubbingId || row.rubbingIdB === rubbingId);
     if (affected.length > 0) await db.compares.bulkDelete(affected.map((row) => row.id));
     await db.rubbings.delete(rubbingId);
+  });
+}
+
+/** 删除工单：工单下的对账记录一并清除；挂在工单上的拓本保留并摘掉工单（两边各留各的） */
+export async function removeOrderCascade(orderId: string): Promise<void> {
+  await db.transaction('rw', [db.orders, db.recons, db.rubbings], async () => {
+    const linked = await db.rubbings.where('orderId').equals(orderId).toArray();
+    if (linked.length > 0) {
+      await db.rubbings.bulkPut(
+        linked.map((row) => ({ ...row, orderId: null, updatedAt: Date.now() })),
+      );
+    }
+    await db.recons.where('orderId').equals(orderId).delete();
+    await db.orders.delete(orderId);
   });
 }
 
