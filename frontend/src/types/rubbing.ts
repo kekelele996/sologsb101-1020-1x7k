@@ -9,8 +9,8 @@ export type RubbingMethod = 'rub' | 'pat' | 'cicada';
 /** 墨色：浓墨 / 淡墨 */
 export type InkTone = 'thick' | 'light';
 
-/** 状态：待编目 / 已编目 / 待比对 */
-export type RubbingState = 'toCatalog' | 'cataloged' | 'toCompare';
+/** 状态：待编目 / 已编目 / 待比对 / 已挂起（对账不符） */
+export type RubbingState = 'toCatalog' | 'cataloged' | 'toCompare' | 'held';
 
 export interface Rubbing {
   id: string;
@@ -32,6 +32,10 @@ export interface Rubbing {
   dateGuess: string;
   /** 状态 */
   state: RubbingState;
+  /** 挂上的传拓工单 id（可空：未挂工单的拓本照常走普通编目流程） */
+  workOrderId: string | null;
+  /** 挂起原因（对账不符时填写，与工单 holdReason 一致） */
+  holdReason: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -64,18 +68,21 @@ export const RUBBING_STATE_LABEL: Record<RubbingState, string> = {
   toCatalog: '待编目',
   cataloged: '已编目',
   toCompare: '待比对',
+  held: '已挂起',
 };
 
 export const RUBBING_STATE_COLOR: Record<RubbingState, string> = {
   toCatalog: '#8c8c8c',
   cataloged: '#2f6f4f',
   toCompare: '#c9963c',
+  held: '#b03a2e',
 };
 
 export const RUBBING_STATE_OPTIONS: ReadonlyArray<{ value: RubbingState; label: string }> = [
   { value: 'toCatalog', label: '待编目' },
   { value: 'cataloged', label: '已编目' },
   { value: 'toCompare', label: '待比对' },
+  { value: 'held', label: '已挂起' },
 ];
 
 export const RUBBING_STATE_FLOW: readonly RubbingState[] = ['toCatalog', 'cataloged', 'toCompare'];
@@ -99,5 +106,7 @@ export function createEmptyRubbingDraft(steleId: string, versionNo: number): Rub
     collectionNo: '',
     dateGuess: '',
     state: 'toCatalog',
+    workOrderId: null,
+    holdReason: '',
   };
 }

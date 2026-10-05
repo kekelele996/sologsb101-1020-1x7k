@@ -7,8 +7,10 @@ import type { Rubbing } from '@/types/rubbing';
 import type { Loss } from '@/types/loss';
 import type { Seal } from '@/types/seal';
 import type { Compare } from '@/types/compare';
+import type { WorkOrder } from '@/types/workOrder';
 import { STELE_FORM_LABEL } from '@/types/stele';
 import { INK_TONE_LABEL, RUBBING_METHOD_LABEL, RUBBING_STATE_LABEL } from '@/types/rubbing';
+import { WORK_ORDER_STATE_LABEL } from '@/types/workOrder';
 import { LOSS_SEVERITY_LABEL, LOSS_TYPE_LABEL } from '@/types/loss';
 import { SEAL_TYPE_LABEL, sealPositionWeight } from '@/types/seal';
 import { COMPARE_CONCLUSION_LABEL } from '@/types/compare';
@@ -44,13 +46,14 @@ function csvCell(value: string | number | null): string {
   return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** 编目卡：一块碑刻 + 其拓本 + 损泐 + 钤印 + 比对结论 */
+/** 编目卡：一块碑刻 + 其拓本 + 损泐 + 钤印 + 比对结论（挂单拓本附传拓工单信息） */
 export function buildCatalogCard(
   stele: Stele,
   rubbings: Rubbing[],
   losses: Loss[],
   seals: Seal[],
   compares: Compare[],
+  workOrders: WorkOrder[] = [],
 ): string {
   const lines: string[] = [];
   lines.push(`【碑帖编目卡】${stele.title}`);
@@ -66,9 +69,15 @@ export function buildCatalogCard(
       const rubbingSeals = seals
         .filter((seal) => seal.rubbingId === rubbing.id)
         .sort((a, b) => sealPositionWeight(a.position) - sealPositionWeight(b.position));
+      const order = rubbing.workOrderId ? workOrders.find((item) => item.id === rubbing.workOrderId) : undefined;
       lines.push(
         `第 ${rubbing.versionNo} 版　${RUBBING_METHOD_LABEL[rubbing.method]}　${INK_TONE_LABEL[rubbing.inkTone]}　${rubbing.paperType}　${rubbing.sizeCm || '尺寸未记'}　收藏号 ${rubbing.collectionNo || '未编'}　${rubbing.dateGuess || '年代待考'}　${RUBBING_STATE_LABEL[rubbing.state]}`,
       );
+      if (order) {
+        lines.push(
+          `　传拓工单：${order.id}　${order.date}　${RUBBING_METHOD_LABEL[order.method]}　计划 ${order.plannedCount} 张　${WORK_ORDER_STATE_LABEL[order.state]}${order.holdReason ? `（${order.holdReason}）` : ''}`,
+        );
+      }
       lines.push(`　损泐字位（${rubbingLosses.length} 条）：`);
       if (rubbingLosses.length === 0) lines.push('　　无');
       rubbingLosses.forEach((loss) => {
@@ -106,9 +115,10 @@ export function exportCatalogCard(
   losses: Loss[],
   seals: Seal[],
   compares: Compare[],
+  workOrders: WorkOrder[] = [],
 ): string {
   const filename = `${stele.title}-编目卡-${stampSuffix()}.txt`;
-  download(filename, buildCatalogCard(stele, rubbings, losses, seals, compares), 'text/plain;charset=utf-8');
+  download(filename, buildCatalogCard(stele, rubbings, losses, seals, compares, workOrders), 'text/plain;charset=utf-8');
   return filename;
 }
 
@@ -118,6 +128,7 @@ export interface ExportContext {
   losses: Loss[];
   seals: Seal[];
   compares: Compare[];
+  workOrders: WorkOrder[];
 }
 
 /** 全部碑刻的编目卡合订文本 */
@@ -131,6 +142,7 @@ export function buildAllCatalogCards(context: ExportContext): string {
         context.losses,
         context.seals,
         context.compares,
+        context.workOrders,
       ),
     )
     .join('\n\n————————————————\n\n');

@@ -3,7 +3,7 @@
  * 维护拓本与钤印集合及筛选条件；同一碑刻下自动生成版本序号。
  */
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
-import { createId, db, removeRubbingCascade, renumberRubbings } from '@/utils/db';
+import { createId, db, invalidateWorkOrderReconciliation, removeRubbingCascade, renumberRubbings } from '@/utils/db';
 import {
   nextRubbingState,
   type Rubbing,
@@ -53,14 +53,24 @@ export const createRubbing = createAsyncThunk('rubbing/create', async (draft: Ru
   const row: Rubbing = { ...draft, id: createId('rub'), createdAt: now, updatedAt: now };
   await db.rubbings.put(row);
   await renumberRubbings(row.steleId);
+  // 挂单关系变化：作废该工单既有对账结论（拓本退回待编目，等待重新对账）
+  if (row.workOrderId) await invalidateWorkOrderReconciliation(row.workOrderId);
   await dispatch(loadRubbings());
   return row;
 });
 
 export const updateRubbing = createAsyncThunk(
   'rubbing/update',
-  async (payload: { id: string; patch: Partial<Rubbing> }, { dispatch }) => {
+  async (payload: { id: string; patch: Partial<Rubbing> }, { dispatch, getState }) => {
+    const state = getState() as RootState;
+    const before = state.rubbing.items.find((item) => item.id === payload.id);
     await db.rubbings.update(payload.id, { ...payload.patch, updatedAt: Date.now() } as never);
+    // 挂单关系变化（新挂 / 改挂 / 解除）：作废新旧工单的既有对账结论
+    const nextWorkOrderId = payload.patch.workOrderId;
+    if (nextWorkOrderId !== undefined && nextWorkOrderId !== before?.workOrderId) {
+      if (before?.workOrderId) await invalidateWorkOrderReconciliation(before.workOrderId);
+      if (nextWorkOrderId) await invalidateWorkOrderReconciliation(nextWorkOrderId);
+    }
     await dispatch(loadRubbings());
   },
 );

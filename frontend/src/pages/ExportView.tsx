@@ -34,6 +34,7 @@ import { loadAll } from '@/stores/store';
 import { selectSteles, setCurrentStele } from '@/stores/steleSlice';
 import { selectRubbings } from '@/stores/rubbingSlice';
 import { selectCompares, selectLosses } from '@/stores/lossSlice';
+import { selectWorkOrders } from '@/stores/workOrderSlice';
 import { SEAL_TYPE_COLOR, SEAL_TYPE_LABEL, sealPositionWeight, type Seal, type SealType } from '@/types/seal';
 import { RUBBING_METHOD_LABEL, RUBBING_STATE_LABEL } from '@/types/rubbing';
 import { COMPARE_CONCLUSION_COLOR, COMPARE_CONCLUSION_LABEL } from '@/types/compare';
@@ -66,6 +67,7 @@ export default function ExportView() {
   const rubbings = useAppSelector(selectRubbings);
   const losses = useAppSelector(selectLosses);
   const compares = useAppSelector(selectCompares);
+  const workOrders = useAppSelector(selectWorkOrders);
   const sealTable = useIdbTable<Seal>((database) => database.seals, { sortByUpdatedAt: false });
 
   const [steleId, setSteleId] = useState<string>('');
@@ -81,8 +83,9 @@ export default function ExportView() {
       losses,
       seals: sealTable.rows,
       compares,
+      workOrders,
     }),
-    [compares, losses, rubbings, sealTable.rows, steles],
+    [compares, losses, rubbings, sealTable.rows, steles, workOrders],
   );
 
   const allCardsLength = useMemo(() => buildAllCatalogCards(context).length, [context]);
@@ -96,9 +99,10 @@ export default function ExportView() {
             losses,
             sealTable.rows,
             compares,
+            workOrders,
           )
         : '请选择碑刻。',
-    [compares, losses, rubbings, sealTable.rows, stele],
+    [compares, losses, rubbings, sealTable.rows, stele, workOrders],
   );
 
   const stat = useMemo(
@@ -108,12 +112,13 @@ export default function ExportView() {
       losses: losses.length,
       seals: sealTable.rows.length,
       compares: compares.length,
+      workOrders: workOrders.length,
       passPercent:
         compares.length === 0
           ? 0
           : Math.round((compares.filter((compare) => compare.conclusion !== 'pending').length / compares.length) * 100),
     }),
-    [compares, losses.length, rubbings.length, sealTable.rows.length, steles.length],
+    [compares, losses.length, rubbings.length, sealTable.rows.length, steles.length, workOrders.length],
   );
 
   const handleExport = async (): Promise<void> => {
@@ -237,6 +242,7 @@ export default function ExportView() {
       <div className="gb-stat-row">
         <StatBadge label="碑刻" value={stat.steles} suffix="处" tone="primary" />
         <StatBadge label="拓本" value={stat.rubbings} suffix="份" tone="info" />
+        <StatBadge label="传拓工单" value={stat.workOrders} suffix="张" tone="primary" />
         <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="warning" />
         <StatBadge label="钤印" value={stat.seals} suffix="方" />
         <StatBadge label="比对记录" value={stat.compares} suffix="条" tone="danger" />
@@ -271,6 +277,7 @@ export default function ExportView() {
                       losses,
                       sealTable.rows,
                       compares,
+                      workOrders,
                     );
                     message.success(`已导出 ${filename}`);
                   }}
@@ -306,6 +313,7 @@ export default function ExportView() {
                       losses,
                       sealTable.rows,
                       compares,
+                      workOrders,
                     );
                     message.success(`已导出 ${filename}（含全部碑刻）`);
                   }}

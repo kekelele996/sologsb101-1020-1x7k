@@ -73,6 +73,12 @@ import {
   type SealType,
 } from '@/types/seal';
 import { selectLosses } from '@/stores/lossSlice';
+import { selectWorkOrders } from '@/stores/workOrderSlice';
+import {
+  WORK_ORDER_STATE_COLOR,
+  WORK_ORDER_STATE_LABEL,
+  type WorkOrder,
+} from '@/types/workOrder';
 import LossTag from '@/components/common/LossTag';
 
 const FILTER_KEYS = ['method', 'state'] as const;
@@ -88,6 +94,7 @@ export default function RubbingList() {
   const filtered = useAppSelector(selectFilteredRubbings);
   const seals = useAppSelector(selectSeals);
   const losses = useAppSelector(selectLosses);
+  const workOrders = useAppSelector(selectWorkOrders);
   const steleFilterId = useAppSelector((state) => state.rubbing.filters.steleId);
 
   const url = useFilterQuery(FILTER_KEYS);
@@ -101,6 +108,19 @@ export default function RubbingList() {
   const [editingSeal, setEditingSeal] = useState<Seal | null>(null);
   const [selectedSealIds, setSelectedSealIds] = useState<string[]>([]);
   const [batchSealType, setBatchSealType] = useState<SealType>('collection');
+
+  // 监听表单内碑刻变化，据此过滤可挂工单
+  const watchedSteleId = Form.useWatch('steleId', form);
+  const attachableOrders = useMemo(
+    () =>
+      workOrders
+        .filter((order) => order.steleId === (watchedSteleId ?? ''))
+        .map((order) => ({
+          value: order.id,
+          label: `${order.id} · ${order.date} · ${RUBBING_METHOD_LABEL[order.method]} · 计划 ${order.plannedCount} 张（${WORK_ORDER_STATE_LABEL[order.state]}）`,
+        })),
+    [watchedSteleId, workOrders],
+  );
 
   useEffect(() => {
     dispatch(setRubbingKeyword(url.keyword));
@@ -124,12 +144,16 @@ export default function RubbingList() {
       cataloged,
       catalogedPercent: total === 0 ? 0 : Math.round((cataloged / total) * 100),
       toCompare: rubbings.filter((rubbing) => rubbing.state === 'toCompare').length,
+      held: rubbings.filter((rubbing) => rubbing.state === 'held').length,
       seals: seals.length,
       losses: losses.length,
     };
   }, [losses.length, rubbings, seals.length]);
 
   const steleTitle = (steleId: string): string => steles.find((stele) => stele.id === steleId)?.title ?? steleId;
+
+  const workOrderOf = (workOrderId: string | null): WorkOrder | undefined =>
+    workOrderId ? workOrders.find((order) => order.id === workOrderId) : undefined;
 
   const nextVersionNo = (steleId: string): number => {
     const list = rubbings.filter((rubbing) => rubbing.steleId === steleId);
@@ -159,6 +183,8 @@ export default function RubbingList() {
       collectionNo: rubbing.collectionNo,
       dateGuess: rubbing.dateGuess,
       state: rubbing.state,
+      workOrderId: rubbing.workOrderId,
+      holdReason: rubbing.holdReason,
     });
     setOpen(true);
   };
@@ -201,12 +227,19 @@ export default function RubbingList() {
     {
       title: '版本',
       dataIndex: 'versionNo',
-      width: 90,
+      width: 110,
       sorter: (a, b) => a.versionNo - b.versionNo,
       render: (value: number, record) => (
-        <Space size={4}>
-          <Tag color="#2f3a34">第 {value} 版</Tag>
-          <Tag color={RUBBING_STATE_COLOR[record.state]}>{RUBBING_STATE_LABEL[record.state]}</Tag>
+        <Space direction="vertical" size={2}>
+          <Space size={4}>
+            <Tag color="#2f3a34">第 {value} 版</Tag>
+            <Tag color={RUBBING_STATE_COLOR[record.state]}>{RUBBING_STATE_LABEL[record.state]}</Tag>
+          </Space>
+          {record.state === 'held' && record.holdReason ? (
+            <Typography.Text type="danger" style={{ fontSize: 12 }}>
+              {record.holdReason}
+            </Typography.Text>
+          ) : null}
         </Space>
       ),
     },
@@ -216,6 +249,24 @@ export default function RubbingList() {
     { title: '墨色', dataIndex: 'inkTone', width: 90, render: (value: InkTone) => INK_TONE_LABEL[value] },
     { title: '尺寸', dataIndex: 'sizeCm', width: 110, render: (value: string) => value || '未记' },
     { title: '收藏号', dataIndex: 'collectionNo', width: 120, render: (value: string) => value || '未编' },
+    {
+      title: '挂单工单',
+      dataIndex: 'workOrderId',
+      width: 170,
+      render: (value: string | null) => {
+        if (!value) return <Typography.Text type="secondary">未挂工单</Typography.Text>;
+        const order = workOrderOf(value);
+        if (!order) return <Typography.Text code>{value}</Typography.Text>;
+        return (
+          <Space size={4} wrap>
+            <Typography.Text code style={{ fontSize: 12 }}>
+              {order.id}
+            </Typography.Text>
+            <Tag color={WORK_ORDER_STATE_COLOR[order.state]}>{WORK_ORDER_STATE_LABEL[order.state]}</Tag>
+          </Space>
+        );
+      },
+    },
     { title: '年代判断', dataIndex: 'dateGuess', width: 120, render: (value: string) => value || '待考' },
     {
       title: '损泐 / 钤印',
@@ -302,6 +353,7 @@ export default function RubbingList() {
       <div className="gb-stat-row">
         <StatBadge label="拓本总数" value={stat.total} suffix="份" tone="primary" />
         <StatBadge label="已编目占比" value={`${stat.catalogedPercent}%`} percent={stat.catalogedPercent} tone="success" />
+        <StatBadge label="已挂起" value={stat.held} suffix="份" tone="danger" />
         <StatBadge label="待比对" value={stat.toCompare} suffix="份" tone="warning" />
         <StatBadge label="钤印总数" value={stat.seals} suffix="方" tone="info" />
         <StatBadge label="损泐字位" value={stat.losses} suffix="条" tone="danger" />
@@ -422,6 +474,18 @@ export default function RubbingList() {
           </Space>
           <Form.Item name="state" label="状态" rules={[{ required: true }]}>
             <Select options={[...RUBBING_STATE_OPTIONS]} />
+          </Form.Item>
+          <Form.Item
+            name="workOrderId"
+            label="挂单工单"
+            extra="挂上对应传拓工单后，须与工单对账相符才算编目完成；不符会挂起并写明原因。不挂工单则照常编目。"
+          >
+            <Select
+              allowClear
+              placeholder="选择该碑刻下的传拓工单（可空）"
+              options={attachableOrders}
+              disabled={!watchedSteleId}
+            />
           </Form.Item>
         </Form>
       </Modal>

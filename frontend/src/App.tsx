@@ -12,6 +12,7 @@ import {
   ExportOutlined,
   FileSearchOutlined,
   PrinterOutlined,
+  ProfileOutlined,
 } from '@ant-design/icons';
 import { ROUTES } from './router';
 import { loadAll, useAppDispatch, useAppSelector } from './stores/store';
@@ -54,13 +55,15 @@ export default function App() {
   const currentStele = steles.find((stele) => stele.id === currentSteleId) ?? null;
   const selectedKey = location.pathname.startsWith('/rubbings')
     ? ROUTES.rubbings
-    : location.pathname.startsWith('/losses')
-      ? ROUTES.losses
-      : location.pathname.startsWith('/compare')
-        ? ROUTES.compare
-        : location.pathname.startsWith('/export')
-          ? ROUTES.export
-          : ROUTES.steles;
+    : location.pathname.startsWith('/workorders')
+      ? ROUTES.workorders
+      : location.pathname.startsWith('/losses')
+        ? ROUTES.losses
+        : location.pathname.startsWith('/compare')
+          ? ROUTES.compare
+          : location.pathname.startsWith('/export')
+            ? ROUTES.export
+            : ROUTES.steles;
 
   return (
     <Layout style={{ minHeight: '100vh', background: 'transparent' }}>
@@ -82,6 +85,7 @@ export default function App() {
           items={[
             { key: ROUTES.steles, icon: <AppstoreOutlined />, label: '碑刻台账' },
             { key: ROUTES.rubbings, icon: <PrinterOutlined />, label: '拓本登记' },
+            { key: ROUTES.workorders, icon: <ProfileOutlined />, label: '传拓工单' },
             { key: ROUTES.losses, icon: <BookOutlined />, label: '损泐字位' },
             { key: ROUTES.compare, icon: <DiffOutlined />, label: '版本比对' },
             { key: ROUTES.export, icon: <ExportOutlined />, label: '编目卡导出' },
